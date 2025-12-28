@@ -155,6 +155,114 @@ saski-aaf-backend/src/
 - Views untuk validasi data KLICI
 - Master data Commercial Invoice
 
+### 3.3. Mekanisme Autentikasi (SSO)
+
+Aplikasi AAF menggunakan mekanisme Single Sign-On (SSO) terintegrasi dengan **KI Activity** (Kalbe International Activity Portal) sebagai identity provider. Autentikasi dilakukan melalui dua metode:
+
+1. **Direct Login**: User memasukkan username/password yang divalidasi ke KI Activity API
+2. **SSO Button**: Redirect ke KI Activity untuk autentikasi terpusat
+
+#### 3.3.1. Komponen Autentikasi
+
+| Komponen          | Lokasi             | Fungsi                                    |
+| ----------------- | ------------------ | ----------------------------------------- |
+| Login.jsx         | Frontend           | Halaman login dengan form dan SSO button  |
+| loginActivity.jsx | Frontend SSO       | Komponen button SSO dengan HMAC signature |
+| user.js (login)   | Backend Handler    | Validasi kredensial ke KI Activity API    |
+| checkToken.js     | Backend Middleware | Validasi token dan otorisasi akses        |
+| service.js        | Backend Service    | HTTP client ke KI Activity Service        |
+
+#### 3.3.2. Alur Autentikasi
+
+```mermaid
+sequenceDiagram
+    participant User as User
+    participant FE as Frontend
+    participant BE as Backend API
+    participant SSO as KI Activity SSO
+    participant DB as SASKI Database
+
+    alt Direct Login
+        User->>FE: Input username/password
+        FE->>BE: POST /master/user/login
+        BE->>SSO: POST /GodKingWeb/Login
+        SSO->>BE: {accName, accEmail, accId}
+    else SSO Button
+        User->>FE: Click "Sign in with KI Activity"
+        FE->>SSO: Redirect with HMAC key
+        SSO->>FE: Callback with token
+        FE->>BE: POST /master/user/login
+    end
+
+    BE->>DB: SELECT from master_user WHERE username
+    DB->>BE: User data + roleId
+
+    BE->>DB: SELECT from role_permission_map WHERE roleId
+    DB->>BE: Permissions list
+
+    alt Has Permission (id=68)
+        BE->>BE: Generate JWT Token
+        BE->>FE: {token, userData}
+        FE->>FE: Store token in localStorage
+    else No Permission
+        BE->>FE: 403 Forbidden
+    end
+```
+
+#### 3.3.3. Token Validation Middleware
+
+Setiap request ke protected endpoint melewati middleware `checkToken.js` yang melakukan:
+
+1. **Extract Token**: Mengambil token dari header `x-auth-token`
+2. **Validate Token**: Memanggil KI Auth Service `/check-token`
+3. **Check User**: Query user dari database SASKI
+4. **Check Permission**: Verifikasi user memiliki permission `aaf.view` (id=68)
+5. **Attach User**: Menyimpan data user ke `req.user` untuk handler selanjutnya
+
+```mermaid
+flowchart TB
+    REQ["Incoming Request"]
+
+    subgraph Middleware["checkToken Middleware"]
+        CHK1["Extract x-auth-token header"]
+        CHK2["Validate token via KI Auth Service"]
+        CHK3["Query user from SASKI.master_user"]
+        CHK4["Check permission id=68"]
+        CHK5["Attach user to req.user"]
+    end
+
+    PASS["✅ Continue to Handler"]
+    FAIL401["❌ 401 Unauthorized"]
+    FAIL403["❌ 403 Forbidden"]
+
+    REQ --> CHK1
+    CHK1 -->|No token| FAIL401
+    CHK1 -->|Has token| CHK2
+    CHK2 -->|Invalid| FAIL401
+    CHK2 -->|Valid| CHK3
+    CHK3 -->|Not found| FAIL401
+    CHK3 -->|Found| CHK4
+    CHK4 -->|No permission| FAIL403
+    CHK4 -->|Has permission| CHK5
+    CHK5 --> PASS
+```
+
+#### 3.3.4. External Services
+
+| Service           | URL Config                         | Fungsi                   |
+| ----------------- | ---------------------------------- | ------------------------ |
+| KI Activity Login | `config.auth/GodKingWeb/Login`     | Validasi kredensial user |
+| KI Auth Service   | `config.kiAuthService/check-token` | Validasi JWT token       |
+
+#### 3.3.5. Database Tables untuk Autentikasi
+
+| Database | Schema | Tabel               | Fungsi                     |
+| -------- | ------ | ------------------- | -------------------------- |
+| SASKI    | master | master_user         | Data user aplikasi         |
+| SASKI    | master | master_role         | Role/grup user             |
+| SASKI    | master | master_permission   | Daftar permission          |
+| SASKI    | master | role_permission_map | Mapping role ke permission |
+
 ---
 
 ## 4. Modul dan Fitur Utama
